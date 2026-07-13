@@ -1,10 +1,7 @@
-import {Router} from "express"
+import { Router } from "express";
+import { identify } from "../controller/identify.controller.js";
 
-const router=Router()
-router.post("/identify",(req,res)=>{
-    res.json({
-        message:"Identify endpoint working "
-    })
-})
+const router = Router();
+router.post("/identify", identify);
 
-export default router ;
+export default router;
