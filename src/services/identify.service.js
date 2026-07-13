@@ -41,16 +41,73 @@ export const identifyContact = async ({ email, phoneNumber }) => {
       },
     };
   }
-  // find primary contact
-  const primaryContact =
-    existingContacts.find((contact) => contact.linkPrecedence === "primary") ||
-    existingContacts[0];
+  const primaryIds = new Set();
 
-  const emailExists = existingContacts.some(
-    (contact) => contact.email === email,
+  for (const contact of existingContacts) {
+    if (contact.linkPrecedence === "primary") {
+      primaryIds.add(contact._id.toString());
+    } else {
+      primaryIds.add(contact.linkedId.toString());
+    }
+  }
+  let graph = await Contact.find({
+    $or: [
+      {
+        _id: {
+          $in: [...primaryIds],
+        },
+      },
+      {
+        linkedId: {
+          $in: [...primaryIds],
+        },
+      },
+    ],
+  }).sort({ createdAt: 1 });
+
+  const primaryContacts = graph.filter(
+    (contact) => contact.linkPrecedence === "primary",
   );
 
-  const phoneExists = existingContacts.some(
+  if (primaryContacts.length > 1) {
+    primaryContacts.sort(
+      (a, b) => new Date(a.createdAt) - new Date(b.createdAt),
+    );
+
+    const oldestPrimary = primaryContacts[0];
+
+    for (let i = 1; i < primaryContacts.length; i++) {
+      const currentPrimary = primaryContacts[i];
+
+      // Convert current primary into secondary
+      await Contact.findByIdAndUpdate(currentPrimary._id, {
+        linkedId: oldestPrimary._id,
+        linkPrecedence: "secondary",
+      });
+
+      // Move all children of current primary
+      await Contact.updateMany(
+        {
+          linkedId: currentPrimary._id,
+        },
+        {
+          linkedId: oldestPrimary._id,
+        },
+      );
+    }
+
+    // Refresh graph after merge
+    graph = await Contact.find({
+      $or: [{ _id: oldestPrimary._id }, { linkedId: oldestPrimary._id }],
+    }).sort({ createdAt: 1 });
+  }
+  const primaryContact = graph.find(
+    (contact) => contact.linkPrecedence === "primary",
+  );
+
+  const emailExists = graph.some((contact) => contact.email === email);
+
+  const phoneExists = graph.some(
     (contact) => contact.phoneNumber === phoneNumber,
   );
 
@@ -62,22 +119,21 @@ export const identifyContact = async ({ email, phoneNumber }) => {
       linkPrecedence: "secondary",
     });
 
-    existingContacts.push(secondaryContact);
+    // Refresh graph
+    graph = await Contact.find({
+      $or: [{ _id: primaryContact._id }, { linkedId: primaryContact._id }],
+    });
   }
   // collect all unique emails
   const emails = [
-    ...new Set(
-      existingContacts.map((contact) => contact.email).filter(Boolean),
-    ),
+    ...new Set(graph.map((contact) => contact.email).filter(Boolean)),
   ];
   // collect all unique phone number
   const phoneNumbers = [
-    ...new Set(
-      existingContacts.map((contact) => contact.phoneNumber).filter(Boolean),
-    ),
+    ...new Set(graph.map((contact) => contact.phoneNumber).filter(Boolean)),
   ];
 
-  const secondaryContactIds = existingContacts
+  const secondaryContactIds = graph
     .filter((contact) => contact.linkPrecedence === "secondary")
     .map((contact) => contact._id);
 
